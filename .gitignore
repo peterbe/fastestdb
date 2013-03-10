@@ -1,0 +1,7 @@
+virtualenv/
+this_virtualenv
+timings/
+distribute-0.6.35.tar.gz
+momoko-1.0.0b2/
+toredis/
+fastestdb-pypy/

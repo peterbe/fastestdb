@@ -1,0 +1,109 @@
+<html>
+<head>
+  <link rel="stylesheet" href="{{ static_url('theme.default.css') }}">
+  <style>
+.demo-container {
+	box-sizing: border-box;
+	width: 750px;
+	height: 300px;
+	padding: 20px 15px 15px 15px;
+	margin: 15px auto 30px auto;
+	border: 1px solid #ddd;
+	background: #fff;
+	background: linear-gradient(#f6f6f6 0, #fff 50px);
+	background: -o-linear-gradient(#f6f6f6 0, #fff 50px);
+	background: -ms-linear-gradient(#f6f6f6 0, #fff 50px);
+	background: -moz-linear-gradient(#f6f6f6 0, #fff 50px);
+	background: -webkit-linear-gradient(#f6f6f6 0, #fff 50px);
+	box-shadow: 0 3px 10px rgba(0,0,0,0.15);
+	-o-box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+	-ms-box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+	-moz-box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+	-webkit-box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+}
+
+.demo-placeholder {
+	width: 100%;
+	height: 100%;
+	font-size: 14px;
+	line-height: 14px;
+}
+
+.legend table {
+	border-spacing: 5px;
+}
+  </style>
+</head>
+<body>
+{% if aggregate %}
+<h2>
+  Aggregate over <i>{{ operations }}</i> operations per engine.
+</h2>
+{% end %}
+<table>
+  <thead>
+    <tr>
+      <th>Label</th>
+      <th>Creating</th>
+      <th>Editing</th>
+      <th>Deleting</th>
+      <th>TOTAL</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for label, creating, editing, deleting, total in tests %}
+    <tr>
+      <td>{{ label }}</td>
+      <td>{{ creating }}</td>
+      <td>{{ editing }}</td>
+      <td>{{ deleting }}</td>
+      <td>{{ total }}</td>
+    </tr>
+  {% end %}
+  </tbody>
+</table>
+<p>The smaller the number, the better.</p>
+
+<div class="demo-container">
+<div id="placeholder" class="demo-placeholder"></div>
+</div>
+<p style="text-align:center">Smaller is better.</p>
+
+<script src="{{ static_url('jquery-1.9.1.min.js') }}"></script>
+<script src="{{ static_url('jquery.tablesorter.min.js') }}"></script>
+<script src="{{ static_url('jquery.flot.js') }}"></script>
+<script src="{{ static_url('jquery.flot.categories.js') }}"></script>
+<script src="{{ static_url('jquery.flot.axislabels.js') }}"></script>
+<script>
+$(function() {
+  $('table').tablesorter({
+    widgets        : ['zebra', 'columns'],
+    sortList: [[4,0]]
+  });
+
+  var data = [];
+  $('tbody tr').each(function() {
+    data.push([$('td', this).eq(0).text(), parseFloat($('td', this).eq(-1).text())]);
+  });
+
+  $.plot("#placeholder", [ data ], {
+    series: {
+      bars: {
+        show: true,
+        barWidth: 0.7,
+        align: "center"
+     }
+    },
+    yaxis: {
+      axisLabel: 'seconds'
+    },
+    xaxis: {
+      mode: "categories",
+      tickLength: 0
+    }
+  });
+
+});
+</script>
+</body>
+</html>
