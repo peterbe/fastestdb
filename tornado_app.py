@@ -7,11 +7,11 @@ import random
 import datetime
 import os
 import re
+import json
 import collections
 from pprint import pprint
 from glob import glob
 from functools import partial
-from cStringIO import StringIO
 from tornado import gen
 from tornado import web
 from tornado.options import define, options
@@ -30,7 +30,16 @@ try:
 except ImportError:
     toredis = None
 
+try:
+    import mongokit
+except ImportError:
+    mongokit = None
+
+if mongokit:
+    from models import Talk
+
 import pymongo
+
 define("debug", default=False, help="run in debug mode", type=bool)
 define("port", default=8000, help="run on the given port", type=int)
 
@@ -77,18 +86,36 @@ class BenchmarkHandler(web.RequestHandler):
     def motor(self):
         return self.application.motor_client['fastestdb_motor']
 
+    @property
+    def mongokit(self):
+        return self.application.mongokit_connection['fastestdb_mongokit']
+
+    def _reset_all(self):
+        cursor = self.db.cursor()
+        cursor.execute("""
+            DELETE FROM talks;
+            SELECT SETVAL('talks_id_seq', 1, true);
+        """)
+        self.redis.flushall()
+        self.application.mongo_connection['fastestdb'].drop_collection('talks')
+        self.application.mongo_connection['fastestdb_motor'].drop_collection('talks')
+        self.application.mongo_connection['fastestdb_mongokit'].drop_collection('talks')
+
     @web.asynchronous
     @gen.engine
     def get(self):
         how_many = int(self.get_argument('how_many', 1))
+        sleep_time = float(self.get_argument('sleep_time', 0.1))
         ioloop_instance = tornado.ioloop.IOLoop.instance()
+
+        self._reset_all()
 
         def write(filename, label, timing):
             with open(os.path.join('timings', filename), 'a') as f:
                 f.write('%s\t%s\t%s\n' % (label, how_many, timing))
 
         TESTS = (
-            ('psycog2',
+            ('psycopg2',
              self._create_talks_sql,
              self._edit_talks_sql,
              self._delete_talks_sql
@@ -133,6 +160,18 @@ class BenchmarkHandler(web.RequestHandler):
                       partial(self._delete_talks_motor, safe=True)
                       ),
 
+        if mongokit:
+            TESTS += ('mongokit',
+                      self._create_talks_mongokit,
+                      self._edit_talks_mongokit,
+                      self._delete_talks_mongokit
+                     ),
+            TESTS += ('mongokit(safe)',
+                      partial(self._create_talks_mongokit, safe=True),
+                      partial(self._edit_talks_mongokit, safe=True),
+                      partial(self._delete_talks_mongokit, safe=True)
+                      ),
+
         tests = []
         for label, creator, editor, deletor in TESTS:
             log_file = '%s.log' % label.replace('(', '_').replace(')', '')
@@ -149,10 +188,11 @@ class BenchmarkHandler(web.RequestHandler):
             write(log_file, 'create', t1 - t0)
 
             # give it a rest so that the database can internall index all the IDs
-            yield gen.Task(
-                ioloop_instance.add_timeout,
-                time.time() + 0.1
-            )
+            if sleep_time:
+                yield gen.Task(
+                    ioloop_instance.add_timeout,
+                    time.time() + sleep_time
+                )
 
             t0 = time.time()
             yield gen.Task(editor, ids)
@@ -164,10 +204,11 @@ class BenchmarkHandler(web.RequestHandler):
             write(log_file, 'edit', t1 - t0)
 
             # give it a rest so that the database can internall index all the IDs
-            yield gen.Task(
-                ioloop_instance.add_timeout,
-                time.time() + 0.1
-            )
+            if sleep_time:
+                yield gen.Task(
+                    ioloop_instance.add_timeout,
+                    time.time() + sleep_time
+                )
 
             t0 = time.time()
             yield gen.Task(deletor, ids)
@@ -188,7 +229,6 @@ class BenchmarkHandler(web.RequestHandler):
     ## Momoko SQL
     ##
 
-    @web.asynchronous
     @gen.engine
     def _create_talks_momoko(self, how_many, callback):
         ids = set()
@@ -215,12 +255,11 @@ class BenchmarkHandler(web.RequestHandler):
                 %s
                 );
                 """,
-                (pk, topic, when, _to_array(tags), duration)
+                (pk, topic, when, tags, duration)
             )
             ids.add(pk)
         callback(ids)
 
-    @web.asynchronous
     @gen.engine
     def _edit_talks_momoko(self, ids, callback):
         exc = self.momoko_db.execute
@@ -239,12 +278,11 @@ class BenchmarkHandler(web.RequestHandler):
                 (topic + 'extra',
                  duration + 1.0,
                  when + ONE_DAY,
-                 _to_array(tags + ['extra']),
+                 tags + ['extra'],
                  pk)
             )
         callback()
 
-    @web.asynchronous
     @gen.engine
     def _delete_talks_momoko(self, ids, callback):
         exc = self.momoko_db.execute
@@ -260,7 +298,6 @@ class BenchmarkHandler(web.RequestHandler):
     ## psycopg2 SQL
     ##
 
-    @web.asynchronous
     @gen.engine
     def _create_talks_sql(self, how_many, callback):
         ids = set()
@@ -286,13 +323,12 @@ class BenchmarkHandler(web.RequestHandler):
                 %s
                 );
                 """,
-                (pk, topic, when, _to_array(tags), duration)
+                (pk, topic, when, tags, duration)
             )
             ids.add(pk)
         cursor.close()
         callback(ids)
 
-    @web.asynchronous
     @gen.engine
     def _edit_talks_sql(self, ids, callback):
         cursor = self.db.cursor()
@@ -309,13 +345,12 @@ class BenchmarkHandler(web.RequestHandler):
                 (topic + 'extra',
                  duration + 1.0,
                  when + ONE_DAY,
-                 _to_array(tags + ['extra']),
+                 tags + ['extra'],
                  pk)
             )
         cursor.close()
         callback()
 
-    @web.asynchronous
     @gen.engine
     def _delete_talks_sql(self, ids, callback):
         cursor = self.db.cursor()
@@ -328,115 +363,97 @@ class BenchmarkHandler(web.RequestHandler):
         callback()
 
     ##
-    ## Redis (blocking)
+    ## Redis JSON (blocking)
     ##
 
-    #@web.asynchronous
     @gen.engine
     def _create_talks_redis(self, how_many, callback):
         ids = set()
-        hset = self.redis.hset
+        set_ = self.redis.set
         for i in range(how_many):
             topic = _random_topic()
             when = _random_when()
             tags = _random_tags()
             duration = _random_duration()
             pk = uuid.uuid4().hex
-            hset(pk, 'topic', topic)
-            hset(pk, 'when', when.strftime('%Y-%m-%d %H:%M:%S'))
-            hset(pk, 'tags', '|'.join(tags))
-            hset(pk, 'duration', duration)
+            document = {
+                'topic': topic,
+                'when': time.mktime(when.timetuple()),
+                'tags': tags,
+                'duration': duration,
+            }
+            set_(pk, json.dumps(document))
             ids.add(pk)
         callback(ids)
 
-    #@web.asynchronous
     @gen.engine
     def _edit_talks_redis(self, ids, callback):
-        hset = self.redis.hset
-        hget = self.redis.hget
+        set_ = self.redis.set
+        get = self.redis.get
         for pk in ids:
-            topic = hget(pk, 'topic')
-            hset(pk, 'topic', topic + 'extra')
-            duration = float(hget(pk, 'duration'))
-            hset(pk, 'duration', duration + 1.0)
-            when = datetime.datetime.strptime(
-                hget(pk, 'when'),
-                '%Y-%m-%d %H:%M:%S'
-            )
-            hset(pk, 'when', (when + ONE_DAY).strftime('%Y-%m-%d %H:%M:%S'))
-            tags = hget(pk, 'tags').split('|')
-            tags += ['extra']
-            hset(pk, 'tags', '|'.join(tags))
+            document = json.loads(get(pk))
+            document['topic'] += 'extra'
+            document['duration'] += 1.0
+            when = datetime.datetime.fromtimestamp(document['when'])
+            document['when'] = time.mktime((when + ONE_DAY).timetuple())
+            document['tags'] += ['extra']
+            set_(pk, json.dumps(document))
         callback()
 
-    #@web.asynchronous
     @gen.engine
     def _delete_talks_redis(self, ids, callback):
+        db = self.redis
         for pk in ids:
-            # delete them all
-            self.redis.delete(pk)
-            #print self.redis.hdel(pk, 'topic')
-            #print self.redis.hdel(pk, 'when')
-            #print self.redis.hdel(pk, 'tags')
-            #print self.redis.hdel(pk, 'duration')
+            db.delete(pk)
         callback()
 
-
     ##
-    ## Redis (non-blocking)
+    ## ToRedis (non-blocking)
     ##
 
-    #@web.asynchronous
     @gen.engine
     def _create_talks_toredis(self, how_many, callback):
         ids = set()
-        hset = self.toredis.hset
+        set_ = self.toredis.set
         for i in range(how_many):
             topic = _random_topic()
             when = _random_when()
             tags = _random_tags()
             duration = _random_duration()
             pk = uuid.uuid4().hex
-            yield gen.Task(hset, pk, 'topic', topic)
-            yield gen.Task(hset, pk, 'topic', topic)
-            yield gen.Task(hset, pk, 'when', when.strftime('%Y-%m-%d %H:%M:%S'))
-            yield gen.Task(hset, pk, 'tags', '|'.join(tags))
-            yield gen.Task(hset, pk, 'duration', duration)
+            document = {
+                'topic': topic,
+                'when': when.strftime('%Y-%m-%d %H:%M:%S'),
+                'tags': tags,
+                'duration': duration,
+            }
+            yield gen.Task(set_, pk, json.dumps(document))
             ids.add(pk)
         callback(ids)
 
-    #@web.asynchronous
     @gen.engine
     def _edit_talks_toredis(self, ids, callback):
-        hset = self.toredis.hset
-        hget = self.toredis.hget
+        set_ = self.toredis.set
+        get = self.toredis.get
         for pk in ids:
-            topic = yield gen.Task(hget, pk, 'topic')
-            yield gen.Task(hset, pk, 'topic', topic.decode('utf8') + 'extra')
-            duration = yield gen.Task(hget, pk, 'duration')
-            duration = float(duration)
-            yield gen.Task(hset, pk, 'duration', duration + 1.0)
-            when = yield gen.Task(hget, pk, 'when')
+            document = yield gen.Task(get, pk)
+            document = json.loads(document)
+            document['topic'] += 'extra'
+            document['duration'] += 1.0
             when = datetime.datetime.strptime(
-                when,
+                document['when'],
                 '%Y-%m-%d %H:%M:%S'
             )
-            yield gen.Task(hset, pk, 'when', when + ONE_DAY)
-            tags = yield gen.Task(hget, pk, 'tags')
-            tags = tags.split('|')
-            tags += ['extra']
-            yield gen.Task(hset, pk, 'tags', '|'.join(tags))
+            document['when'] = (when + ONE_DAY).strftime('%Y-%m-%d %H:%M:%S')
+            document['tags'] += ['extra']
+            yield gen.Task(set_, pk, json.dumps(document))
         callback()
 
-    #@web.asynchronous
     @gen.engine
     def _delete_talks_toredis(self, ids, callback):
         for pk in ids:
-            # delete them all
             yield gen.Task(self.toredis.delete, pk)
         callback()
-
-
 
     ##
     ## PyMongo (blocking)
@@ -549,6 +566,48 @@ class BenchmarkHandler(web.RequestHandler):
         callback()
 
 
+    ##
+    ## MongoKit (blocking)
+    ##
+
+    @gen.engine
+    def _create_talks_mongokit(self, how_many, callback, safe=False):
+        ids = set()
+        collection = self.mongokit.talks
+        for i in range(how_many):
+            topic = _random_topic()
+            when = _random_when()
+            tags = _random_tags()
+            duration = _random_duration()
+            talk = collection.Talk()
+            talk['topic'] = topic
+            talk['when'] = when
+            talk['tags'] = tags
+            talk['duration'] = duration
+            talk.save(safe=safe)
+            ids.add(talk['_id'])
+        callback(ids)
+
+    @gen.engine
+    def _edit_talks_mongokit(self, ids, callback, safe=False):
+        collection = self.mongokit.talks
+        for pk in ids:
+            talk = collection.Talk.find_one({'_id': pk})
+            talk['topic'] += 'extra'
+            talk['duration'] += 1.0
+            talk['when'] += ONE_DAY
+            talk['tags'] += ['extra']
+            talk.save(safe=safe)
+        callback()
+
+    @gen.engine
+    def _delete_talks_mongokit(self, ids, callback, safe=False):
+        collection = self.mongokit.talks
+        for pk in ids:
+            collection.remove({'_id': pk}, safe=safe)
+        callback()
+
+
 class AggregateBenchmarkHandler(BenchmarkHandler):
 
     def get(self):
@@ -619,9 +678,6 @@ def _random_tags():
 def _random_duration():
     return round(random.random() * 10, 1)
 
-def _to_array(seq):
-    return '{%s}' % (','.join('"%s"' % x for x in seq))
-
 
 routes = [
     (r"/", MainHandler),
@@ -660,7 +716,9 @@ if __name__ == "__main__":
         application.mongo_connection = pymongo.MongoClient()
     if motor:
         application.motor_client = motor.MotorClient().open_sync()
-
+    if mongokit:
+        application.mongokit_connection = mongokit.Connection()
+        application.mongokit_connection.register([Talk])
 
     print "Starting tornado on port", options.port
     application.listen(options.port)

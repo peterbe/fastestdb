@@ -32,6 +32,9 @@
 .legend table {
 	border-spacing: 5px;
 }
+
+td.fastest { color: green; }
+td.slowest { color: red; }
   </style>
 </head>
 <body>
@@ -74,36 +77,6 @@
 <script src="{{ static_url('jquery.flot.js') }}"></script>
 <script src="{{ static_url('jquery.flot.categories.js') }}"></script>
 <script src="{{ static_url('jquery.flot.axislabels.js') }}"></script>
-<script>
-$(function() {
-  $('table').tablesorter({
-    widgets        : ['zebra', 'columns'],
-    sortList: [[4,0]]
-  });
-
-  var data = [];
-  $('tbody tr').each(function() {
-    data.push([$('td', this).eq(0).text(), parseFloat($('td', this).eq(-1).text())]);
-  });
-
-  $.plot("#placeholder", [ data ], {
-    series: {
-      bars: {
-        show: true,
-        barWidth: 0.7,
-        align: "center"
-     }
-    },
-    yaxis: {
-      axisLabel: 'seconds'
-    },
-    xaxis: {
-      mode: "categories",
-      tickLength: 0
-    }
-  });
-
-});
-</script>
+<script src="{{ static_url('main.js') }}"></script>
 </body>
 </html>
