@@ -55,6 +55,11 @@ Second you need to install all the python dependencies::
 
 (some versions are pinned, perhaps that's not important)
 
+To set up the postgres table simply load in ``schema.sql``. Like this::
+
+    $ createdb fastestdb
+    $ psql fastestdb < schema.sql
+
 
 How to run
 ----------
