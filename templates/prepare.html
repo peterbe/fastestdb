@@ -1,0 +1,35 @@
+<html>
+<head>
+  <style>
+  </style>
+</head>
+<body>
+<h2>
+  Prepare for a benchmark
+</h2>
+
+<form action="/benchmark">
+<label>Iterations:
+<input name="how_many" value="10" style="width:100px;font-size:140%">
+</label>
+<br>
+<label>Sleeptime:
+<input name="sleep_time" value="0.1" style="width:100px;font-size:140%">
+</label>
+
+<table>
+  {% for label in labels %}
+  <tr>
+    <td><input type="checkbox" name="labels" value="{{ label }}" checked></td>
+    <td>{{ label }}</td>
+  </tr>
+  {% end %}
+</table>
+
+<button type="submit">Let's go!</button>
+</form>
+
+<script src="{{ static_url('jquery-1.9.1.min.js') }}"></script>
+<script src="{{ static_url('prepare.js') }}"></script>
+</body>
+</html>

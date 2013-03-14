@@ -101,19 +101,7 @@ class BenchmarkHandler(web.RequestHandler):
         self.application.mongo_connection['fastestdb_motor'].drop_collection('talks')
         self.application.mongo_connection['fastestdb_mongokit'].drop_collection('talks')
 
-    @web.asynchronous
-    @gen.engine
-    def get(self):
-        how_many = int(self.get_argument('how_many', 1))
-        sleep_time = float(self.get_argument('sleep_time', 0.1))
-        ioloop_instance = tornado.ioloop.IOLoop.instance()
-
-        self._reset_all()
-
-        def write(filename, label, timing):
-            with open(os.path.join('timings', filename), 'a') as f:
-                f.write('%s\t%s\t%s\n' % (label, how_many, timing))
-
+    def get_all_tests(self):
         TESTS = (
             ('psycopg2',
              self._create_talks_sql,
@@ -172,8 +160,28 @@ class BenchmarkHandler(web.RequestHandler):
                       partial(self._delete_talks_mongokit, safe=True)
                       ),
 
+        return TESTS
+
+
+    @web.asynchronous
+    @gen.engine
+    def get(self):
+        how_many = int(self.get_argument('how_many', 1))
+        sleep_time = float(self.get_argument('sleep_time', 0.1))
+
+        labels = self.get_arguments('labels', None)
+        ioloop_instance = tornado.ioloop.IOLoop.instance()
+
+        self._reset_all()
+
+        def write(filename, label, timing):
+            with open(os.path.join('timings', filename), 'a') as f:
+                f.write('%s\t%s\t%s\n' % (label, how_many, timing))
+
         tests = []
-        for label, creator, editor, deletor in TESTS:
+        for label, creator, editor, deletor in self.get_all_tests():
+            if labels and label not in labels:
+                continue
             log_file = '%s.log' % label.replace('(', '_').replace(')', '')
             test = [label]
             total = 0.0
@@ -187,7 +195,7 @@ class BenchmarkHandler(web.RequestHandler):
             )
             write(log_file, 'create', t1 - t0)
 
-            # give it a rest so that the database can internall index all the IDs
+            # give it a rest so that the database can internally index things
             if sleep_time:
                 yield gen.Task(
                     ioloop_instance.add_timeout,
@@ -203,7 +211,7 @@ class BenchmarkHandler(web.RequestHandler):
             )
             write(log_file, 'edit', t1 - t0)
 
-            # give it a rest so that the database can internall index all the IDs
+            # give it a rest so that the database can internally index things
             if sleep_time:
                 yield gen.Task(
                     ioloop_instance.add_timeout,
@@ -542,6 +550,7 @@ class BenchmarkHandler(web.RequestHandler):
                 collection.find_one,
                 {'_id': pk}
             )
+            assert document, pk
             document['topic'] += 'extra'
             document['duration'] += 1.0
             document['when'] += ONE_DAY
@@ -650,6 +659,12 @@ class AggregateBenchmarkHandler(BenchmarkHandler):
         )
 
 
+class PrepareBenchmarkHandler(BenchmarkHandler):
+    def get(self):
+        labels = [x[0] for x in self.get_all_tests()]
+        self.render('prepare.html', labels=labels)
+
+
 def _random_topic():
     return random.choice(
         (u'No talks added yet',
@@ -683,6 +698,7 @@ routes = [
     (r"/", MainHandler),
     (r"/benchmark", BenchmarkHandler),
     (r"/aggregate", AggregateBenchmarkHandler),
+    (r"/prepare", PrepareBenchmarkHandler),
 ]
 
 if __name__ == "__main__":
