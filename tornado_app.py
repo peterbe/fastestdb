@@ -16,9 +16,21 @@ from tornado import gen
 from tornado import web
 from tornado.options import define, options
 import tornado.ioloop
-import redis.client
-import psycopg2
-import momoko
+
+try:
+    import redis.client as redis_client
+except ImportError:
+    redis_client = None
+
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
+
+try:
+    import momoko
+except ImportError:
+    momoko = None
 
 try:
     import motor
@@ -91,34 +103,39 @@ class BenchmarkHandler(web.RequestHandler):
         return self.application.mongokit_connection['fastestdb_mongokit']
 
     def _reset_all(self):
-        cursor = self.db.cursor()
-        cursor.execute("""
-            DELETE FROM talks;
-            SELECT SETVAL('talks_id_seq', 1, true);
-        """)
-        self.redis.flushall()
-        self.application.mongo_connection['fastestdb'].drop_collection('talks')
-        self.application.mongo_connection['fastestdb_motor'].drop_collection('talks')
-        self.application.mongo_connection['fastestdb_mongokit'].drop_collection('talks')
+        if psycopg2:
+            cursor = self.db.cursor()
+            cursor.execute("""
+                DELETE FROM talks;
+                SELECT SETVAL('talks_id_seq', 1, true);
+            """)
+
+        if redis_client:
+            self.redis.flushall()
+
+        if pymongo:
+            self.application.mongo_connection['fastestdb'].drop_collection('talks')
+            self.application.mongo_connection['fastestdb_motor'].drop_collection('talks')
+            self.application.mongo_connection['fastestdb_mongokit'].drop_collection('talks')
 
     def get_all_tests(self):
-        TESTS = (
-            ('psycopg2',
-             self._create_talks_sql,
-             self._edit_talks_sql,
-             self._delete_talks_sql
-            ),
-            ('redis',
-             self._create_talks_redis,
-             self._edit_talks_redis,
-             self._delete_talks_redis
-            ),
-            ('momoko',
-             self._create_talks_momoko,
-             self._edit_talks_momoko,
-             self._delete_talks_momoko
-            ),
-        )
+        TESTS = ()
+
+        if psycopg2:
+            TESTS += ('psycopg2',
+                      self._create_talks_sql,
+                      self._edit_talks_sql,
+                      self._delete_talks_sql),
+        if redis_client:
+            TESTS += ('redis',
+                      self._create_talks_redis,
+                      self._edit_talks_redis,
+                      self._delete_talks_redis),
+        if momoko:
+            TESTS += ('momoko',
+                      self._create_talks_momoko,
+                      self._edit_talks_momoko,
+                      self._delete_talks_momoko),
         if toredis:
             TESTS += ('toredis',
                       self._create_talks_toredis,
@@ -674,7 +691,7 @@ def _random_topic():
          u' (Kaw uhn KEU-ra shin KAW-la root uh CHOO-nik mee uhn-royer?)',
          u'Chah beh shin KEU-ra, sheh shin moe CHYEH-luh uh vah EEN-tchuh!',
          u'STUH LUH-oom BRISS-kaht-chun goo MAWR',
-         u"Suas Leis a' Gh√†idhlig! Up with Gaelic!",
+         u"Suas Leis a' Gh‡idhlig! Up with Gaelic!",
          u"Tha mi ag iarraidh briosgaid!",
         ))
 
@@ -711,15 +728,21 @@ if __name__ == "__main__":
         static_path=os.path.join(os.path.dirname(__file__), "static"),
     )
 
-    application.momoko_db = momoko.Pool(
-        dsn=PG_DSN,
-        size=5,
-    )
-    application.db = psycopg2.connect(PG_DSN)
-    application.redis = redis.client.Redis(
-        'localhost',
-        6379
-    )
+
+    if momoko:
+        application.momoko_db = momoko.Pool(
+            dsn=PG_DSN,
+            size=5,
+        )
+
+    if psycopg2:
+        application.db = psycopg2.connect(PG_DSN)
+
+    if redis_client:
+        application.redis = redis_client.Redis(
+            'localhost',
+            6379
+        )
 
     if toredis:
         application.toredis = toredis.Client()
