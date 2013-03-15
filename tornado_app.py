@@ -691,7 +691,7 @@ def _random_topic():
          u' (Kaw uhn KEU-ra shin KAW-la root uh CHOO-nik mee uhn-royer?)',
          u'Chah beh shin KEU-ra, sheh shin moe CHYEH-luh uh vah EEN-tchuh!',
          u'STUH LUH-oom BRISS-kaht-chun goo MAWR',
-         u"Suas Leis a' Gh‡idhlig! Up with Gaelic!",
+         u"Suas Leis a' Gh√†idhlig! Up with Gaelic!",
          u"Tha mi ag iarraidh briosgaid!",
         ))
 
