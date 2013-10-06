@@ -16,12 +16,17 @@
 <label>Sleeptime:
 <input name="sleep_time" value="0.1" style="width:100px;font-size:140%">
 </label>
+<br>
+<label>Reset first:
+<input type="checkbox" name="reset_first" value="1">
+<small>means all tables are wiped before it beings. will break the ability to run concurrent benchmark tests</small>
+</label>
 
 <table>
-  {% for label in labels %}
+  {% for i, label in enumerate(labels) %}
   <tr>
-    <td><input type="checkbox" name="labels" value="{{ label }}" checked></td>
-    <td>{{ label }}</td>
+    <td><input type="checkbox" id="label{{ i }}" name="labels" value="{{ label }}" checked></td>
+    <td><label for="label{{ i }}">{{ label }}</label></td>
   </tr>
   {% end %}
 </table>

@@ -25,7 +25,12 @@ except ImportError:
 try:
     import psycopg2
 except ImportError:
-    psycopg2 = None
+    try:
+        from psycopg2cffi import compat
+        compat.register()
+        import psycopg2
+    except ImportError:
+        psycopg2 = None
 
 try:
     import momoko
@@ -52,6 +57,11 @@ if mongokit:
 
 import pymongo
 
+try:
+    from pyelasticsearch import ElasticSearch
+except ImportError:
+    ElasticSearch = None
+
 define("debug", default=False, help="run in debug mode", type=bool)
 define("port", default=8000, help="run on the given port", type=int)
 
@@ -66,8 +76,9 @@ class MainHandler(web.RequestHandler):
     def get(self):
         self.write("""
         <html>
-        <a href=/benchmark?how_many=10>Benchmark</a>
-        <a href=/aggregate>Aggregate Benchmark</a>
+        <a href=/benchmark?how_many=10>Benchmark</a><br>
+        <a href=/aggregate>Aggregate Benchmark</a><br>
+        <a href=/prepare>Prepare Benchmark</a>
         </html>
         """)
 
@@ -102,6 +113,10 @@ class BenchmarkHandler(web.RequestHandler):
     def mongokit(self):
         return self.application.mongokit_connection['fastestdb_mongokit']
 
+    @property
+    def es(self):
+        return self.application.es
+
     def _reset_all(self):
         if psycopg2:
             cursor = self.db.cursor()
@@ -112,6 +127,9 @@ class BenchmarkHandler(web.RequestHandler):
 
         if redis_client:
             self.redis.flushall()
+
+        if ElasticSearch:
+            self.es.delete_index('talks')
 
         if pymongo:
             self.application.mongo_connection['fastestdb'].drop_collection('talks')
@@ -177,6 +195,13 @@ class BenchmarkHandler(web.RequestHandler):
                       partial(self._delete_talks_mongokit, safe=True)
                       ),
 
+        if ElasticSearch:
+            TESTS += ('elasticsearch',
+                      self._create_talks_es,
+                      self._edit_talks_es,
+                      self._delete_talks_es
+                     ),
+
         return TESTS
 
 
@@ -189,7 +214,8 @@ class BenchmarkHandler(web.RequestHandler):
         labels = self.get_arguments('labels', None)
         ioloop_instance = tornado.ioloop.IOLoop.instance()
 
-        self._reset_all()
+        if int(self.get_argument('reset_first', 0)):
+            self._reset_all()
 
         def write(filename, label, timing):
             with open(os.path.join('timings', filename), 'a') as f:
@@ -385,6 +411,63 @@ class BenchmarkHandler(web.RequestHandler):
                 (pk,)
             )
         cursor.close()
+        callback()
+
+
+    ##
+    ## pyelasticsearch
+    ##
+
+    @gen.engine
+    def _create_talks_es(self, how_many, callback):
+        ids = set()
+        docs = []
+
+        for i in range(how_many):
+            document = dict(
+                topic=_random_topic(),
+                when=_random_when(),
+                tags=_random_tags(),
+                duration=_random_duration()
+            )
+            document['when'] = time.mktime(document['when'].timetuple())
+            document['id'] = uuid.uuid4().hex
+            ids.add(document['id'])
+            docs.append(document)
+        results = self.es.bulk_index(
+            'talks',
+            'talk',
+            docs
+        )
+        #ids = [x['create']['_id'] for x in results['items']]
+            #r = self.es.index(
+            #    'talks',
+            #    'talk',
+            #    document)
+            #ids.add(r['_id'])
+        callback(ids)
+
+    @gen.engine
+    def _edit_talks_es(self, ids, callback):
+        for pk in ids:
+            thing = self.es.get('talks', 'talk', pk)
+            document = thing['_source']
+            document['topic'] += 'extra'
+            document['duration'] += 1.0
+            when = datetime.datetime.fromtimestamp(document['when'])
+            document['when'] = time.mktime((when + ONE_DAY).timetuple())
+            document['tags'] += ['extra']
+            self.es.index(
+                'talks',
+                'talk',
+                document,
+                id=thing['_id']
+            )
+        callback()
+
+    def _delete_talks_es(self, ids, callback):
+        for pk in ids:
+            self.es.delete('talks', 'talk', pk)
         callback()
 
     ##
@@ -682,6 +765,12 @@ class PrepareBenchmarkHandler(BenchmarkHandler):
         self.render('prepare.html', labels=labels)
 
 
+class LabelsHandler(BenchmarkHandler):
+    def get(self):
+        labels = [x[0] for x in self.get_all_tests()]
+        self.write({'labels': labels})
+
+
 def _random_topic():
     return random.choice(
         (u'No talks added yet',
@@ -716,6 +805,7 @@ routes = [
     (r"/benchmark", BenchmarkHandler),
     (r"/aggregate", AggregateBenchmarkHandler),
     (r"/prepare", PrepareBenchmarkHandler),
+    (r"/labels", LabelsHandler),
 ]
 
 if __name__ == "__main__":
@@ -758,6 +848,8 @@ if __name__ == "__main__":
     if mongokit:
         application.mongokit_connection = mongokit.Connection()
         application.mongokit_connection.register([Talk])
+    if ElasticSearch:
+        application.es = ElasticSearch('http://localhost:9200')
 
     print "Starting tornado on port", options.port
     application.listen(options.port)
