@@ -64,10 +64,15 @@ except ImportError:
 if mongokit:
     from models import Talk
 
+try:
+    import memcache
+except ImportError:
+    memcache = None
+
 import pymongo
 
 try:
-    from pyelasticsearch import ElasticSearch
+    from pyelasticsearch import ElasticSearch, ElasticHttpNotFoundError
 except ImportError:
     ElasticSearch = None
 
@@ -126,6 +131,10 @@ class BenchmarkHandler(web.RequestHandler):
     def es(self):
         return self.application.es
 
+    @property
+    def memcache(self):
+        return self.application.memcache
+
     def _reset_all(self):
         if psycopg2:
             cursor = self.db.cursor()
@@ -145,12 +154,18 @@ class BenchmarkHandler(web.RequestHandler):
             self.redis.flushall()
 
         if ElasticSearch:
-            self.es.delete_index('talks')
+            try:
+                self.es.delete_index('talks')
+            except ElasticHttpNotFoundError:
+                pass
 
         if pymongo:
             self.application.mongo_connection['fastestdb'].drop_collection('talks')
             self.application.mongo_connection['fastestdb_motor'].drop_collection('talks')
             self.application.mongo_connection['fastestdb_mongokit'].drop_collection('talks')
+
+        if memcache:
+            self.memcache.flush_all()
 
     def get_all_tests(self):
         TESTS = ()
@@ -216,6 +231,13 @@ class BenchmarkHandler(web.RequestHandler):
                       self._create_talks_es,
                       self._edit_talks_es,
                       self._delete_talks_es
+                     ),
+
+        if memcache:
+            TESTS += ('memcache',
+                      self._create_talks_memcache,
+                      self._edit_talks_memcache,
+                      self._delete_talks_memcache
                      ),
 
         return TESTS
@@ -579,6 +601,52 @@ class BenchmarkHandler(web.RequestHandler):
             yield gen.Task(self.toredis.delete, pk)
         callback()
 
+
+    ##
+    ## Memcache JSON (blocking)
+    ##
+
+    @gen.engine
+    def _create_talks_memcache(self, how_many, callback):
+        ids = set()
+        set_ = self.memcache.set
+        for i in range(how_many):
+            topic = _random_topic()
+            when = _random_when()
+            tags = _random_tags()
+            duration = _random_duration()
+            pk = uuid.uuid4().hex
+            document = {
+                'topic': topic,
+                'when': time.mktime(when.timetuple()),
+                'tags': tags,
+                'duration': duration,
+            }
+            set_(pk, json.dumps(document))
+            ids.add(pk)
+        callback(ids)
+
+    @gen.engine
+    def _edit_talks_memcache(self, ids, callback):
+        set_ = self.memcache.set
+        get = self.memcache.get
+        for pk in ids:
+            document = json.loads(get(pk))
+            document['topic'] += 'extra'
+            document['duration'] += 1.0
+            when = datetime.datetime.fromtimestamp(document['when'])
+            document['when'] = time.mktime((when + ONE_DAY).timetuple())
+            document['tags'] += ['extra']
+            set_(pk, json.dumps(document))
+        callback()
+
+    @gen.engine
+    def _delete_talks_memcache(self, ids, callback):
+        delete = self.memcache.delete
+        for pk in ids:
+            delete(pk)
+        callback()
+
     ##
     ## PyMongo (blocking)
     ##
@@ -866,6 +934,8 @@ if __name__ == "__main__":
         application.mongokit_connection.register([Talk])
     if ElasticSearch:
         application.es = ElasticSearch('http://localhost:9200')
+    if memcache:
+        application.memcache = memcache.Client(['localhost:11211'])
 
     print "Starting tornado on port", options.port
     application.listen(options.port)
