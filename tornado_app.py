@@ -7,7 +7,16 @@ import random
 import datetime
 import os
 import re
-import json
+try:
+    import ujson as json
+    print 'using ujson'
+except ImportError:
+    try:
+        import simplejson as json
+        print 'using simplejson'
+    except ImportError:
+        import json
+        print 'using builtin json module'
 import collections
 from pprint import pprint
 from glob import glob
@@ -121,8 +130,15 @@ class BenchmarkHandler(web.RequestHandler):
         if psycopg2:
             cursor = self.db.cursor()
             cursor.execute("""
-                DELETE FROM talks;
-                SELECT SETVAL('talks_id_seq', 1, true);
+                DROP TABLE talks;
+                CREATE TABLE talks (
+                 id serial primary key,
+                 topic varchar(200),
+                 "when" timestamp without time zone,
+                 tags varchar(100)[],
+                 duration real
+                );
+
             """)
 
         if redis_client:
