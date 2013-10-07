@@ -469,20 +469,19 @@ class BenchmarkHandler(web.RequestHandler):
                 duration=_random_duration()
             )
             document['when'] = time.mktime(document['when'].timetuple())
-            document['id'] = uuid.uuid4().hex
-            ids.add(document['id'])
-            docs.append(document)
-        results = self.es.bulk_index(
-            'talks',
-            'talk',
-            docs
-        )
+            #document['id'] = uuid.uuid4().hex
+            r = self.es.index(
+                'talks',
+                'talk',
+                document)
+            ids.add(r['_id'])
+            #docs.append(document)
+        #results = self.es.bulk_index(
+        #    'talks',
+        #    'talk',
+        #    docs
+        #)
         #ids = [x['create']['_id'] for x in results['items']]
-            #r = self.es.index(
-            #    'talks',
-            #    'talk',
-            #    document)
-            #ids.add(r['_id'])
         callback(ids)
 
     @gen.engine
