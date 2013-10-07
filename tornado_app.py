@@ -76,6 +76,11 @@ try:
 except ImportError:
     ElasticSearch = None
 
+try:
+    import MySQLdb
+except ImportError:
+    MySQLdb
+
 define("debug", default=False, help="run in debug mode", type=bool)
 define("port", default=8000, help="run on the given port", type=int)
 
@@ -85,6 +90,12 @@ PG_DSN = (
     'dbname=fastestdb user=peterbe password=test123 '
     'host=localhost port=5432'
 )
+
+MYSQL = {
+    'user': 'root',
+    'passwd': 'test123',
+    'db': 'fastestdb'
+}
 
 class MainHandler(web.RequestHandler):
     def get(self):
@@ -135,6 +146,10 @@ class BenchmarkHandler(web.RequestHandler):
     def memcache(self):
         return self.application.memcache
 
+    @property
+    def mysql(self):
+        return self.application.mysql
+
     def _reset_all(self):
         if psycopg2:
             cursor = self.db.cursor()
@@ -148,6 +163,18 @@ class BenchmarkHandler(web.RequestHandler):
                  duration real
                 );
 
+            """)
+
+        if MySQLdb:
+            self.mysql.execute("""
+                DROP TABLE IF EXISTS talks;
+                CREATE TABLE talks (
+                 `id` integer auto_increment primary key,
+                 `topic` varchar(200),
+                 `when` datetime,
+                 `tags` text,
+                 `duration` real
+                );
             """)
 
         if redis_client:
@@ -238,6 +265,13 @@ class BenchmarkHandler(web.RequestHandler):
                       self._create_talks_memcache,
                       self._edit_talks_memcache,
                       self._delete_talks_memcache
+                     ),
+
+        if MySQLdb:
+            TESTS += ('mysql',
+                      self._create_talks_mysql,
+                      self._edit_talks_mysql,
+                      self._delete_talks_mysql
                      ),
 
         return TESTS
@@ -443,6 +477,71 @@ class BenchmarkHandler(web.RequestHandler):
     @gen.engine
     def _delete_talks_sql(self, ids, callback):
         cursor = self.db.cursor()
+        for pk in ids:
+            cursor.execute(
+                'delete from talks where id=%s',
+                (pk,)
+            )
+        cursor.close()
+        callback()
+
+
+    ##
+    ## mysql (blocking)
+    ##
+
+    @gen.engine
+    def _create_talks_mysql(self, how_many, callback):
+        ids = set()
+        cursor = self.mysql.cursor()
+        for i in range(how_many):
+            topic = _random_topic()
+            when = _random_when()
+            tags = _random_tags()
+            duration = _random_duration()
+            cursor.execute(
+                """
+                insert into talks (`topic`, `when`, `tags`, `duration`) values (
+                %s,
+                %s,
+                %s,
+                %s
+                );
+                """,
+                (topic, when, json.dumps(tags), duration)
+            )
+            cursor.execute('select last_insert_id();')
+            pk, = cursor.fetchone()
+            ids.add(pk)
+        cursor.close()
+        callback(ids)
+
+    @gen.engine
+    def _edit_talks_mysql(self, ids, callback):
+        cursor = self.mysql.cursor()
+        for pk in ids:
+            cursor.execute(
+                'select `topic`, `duration`, `when`, `tags` from talks where id=%s',
+                (pk,)
+            )
+            topic, duration, when, tags = cursor.fetchone()
+            tags = json.loads(tags)
+            cursor.execute(
+                'update talks set '
+                '`topic` = %s, `duration` = %s, `when` = %s, `tags` = %s'
+                'where `id`=%s',
+                (topic + 'extra',
+                 duration + 1.0,
+                 when + ONE_DAY,
+                 json.dumps(tags + ['extra']),
+                 pk)
+            )
+        cursor.close()
+        callback()
+
+    @gen.engine
+    def _delete_talks_mysql(self, ids, callback):
+        cursor = self.mysql.cursor()
         for pk in ids:
             cursor.execute(
                 'delete from talks where id=%s',
@@ -935,6 +1034,8 @@ if __name__ == "__main__":
         application.es = ElasticSearch('http://localhost:9200')
     if memcache:
         application.memcache = memcache.Client(['localhost:11211'])
+    if MySQLdb:
+        application.mysql = MySQLdb.connect(**MYSQL)
 
     print "Starting tornado on port", options.port
     application.listen(options.port)
