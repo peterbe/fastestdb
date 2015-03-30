@@ -25,6 +25,8 @@ from tornado import gen
 from tornado import web
 from tornado.options import define, options
 import tornado.ioloop
+import requests
+import pytz
 
 try:
     import redis.client as redis_client
@@ -50,6 +52,11 @@ try:
     import motor
 except ImportError:
     motor = None
+
+try:
+    import rethinkdb
+except ImportError:
+    rethinkdb = None
 
 try:
     import toredis
@@ -149,6 +156,10 @@ class BenchmarkHandler(web.RequestHandler):
     @property
     def mysql(self):
         return self.application.mysql
+
+    @property
+    def rethinkdb(self):
+        return self.application.rethinkdb
 
     def _reset_all(self):
         if psycopg2:
@@ -253,7 +264,7 @@ class BenchmarkHandler(web.RequestHandler):
                       partial(self._delete_talks_mongokit, safe=True)
                       ),
 
-        if ElasticSearch:
+        if ElasticSearch and self.es:
             TESTS += ('elasticsearch',
                       self._create_talks_es,
                       self._edit_talks_es,
@@ -272,6 +283,13 @@ class BenchmarkHandler(web.RequestHandler):
                       self._create_talks_mysql,
                       self._edit_talks_mysql,
                       self._delete_talks_mysql
+                     ),
+
+        if rethinkdb:
+            TESTS += ('rethinkdb',
+                      self._create_talks_rethinkdb,
+                      self._edit_talks_rethinkdb,
+                      self._delete_talks_rethinkdb
                      ),
 
         return TESTS
@@ -548,6 +566,51 @@ class BenchmarkHandler(web.RequestHandler):
                 (pk,)
             )
         cursor.close()
+        callback()
+
+
+    ##
+    ## rethinkdb (blocking)
+    ##
+
+    @gen.engine
+    def _create_talks_rethinkdb(self, how_many, callback):
+        ids = set()
+        conn = self.rethinkdb
+        for i in range(how_many):
+            topic = _random_topic()
+            when = _random_when()
+            tags = _random_tags()
+            duration = _random_duration()
+            document = {
+                'topic': topic,
+                'when': when,
+                'tags': tags,
+                'duration': duration,
+            }
+            ret = rethinkdb.table('talks').insert(document).run(conn)
+            pk = ret['generated_keys'][0]
+            ids.add(pk)
+        callback(ids)
+
+    @gen.engine
+    def _edit_talks_rethinkdb(self, ids, callback):
+        conn = self.rethinkdb
+        for pk in ids:
+            document = rethinkdb.table('talks').get(pk).run(conn)
+            rethinkdb.table('talks').get(pk).update({
+                'topic': document['topic'] + 'extra',
+                'duration': document['duration'] + 1.0,
+                'when': document['when'] + ONE_DAY,
+                'tags': document['tags'] + ['extra']
+            }).run(conn)
+        callback()
+
+    @gen.engine
+    def _delete_talks_rethinkdb(self, ids, callback):
+        conn = self.rethinkdb
+        for pk in ids:
+            rethinkdb.table('talks').get(pk).delete().run(conn)
         callback()
 
 
@@ -967,10 +1030,13 @@ def _random_topic():
         ))
 
 def _random_when():
-    return datetime.datetime(random.randint(2000, 2010),
-                             random.randint(1, 12),
-                             random.randint(1, 28),
-                             0, 0, 0)#.replace(tzinfo=utc)
+    dt = datetime.datetime(
+        random.randint(2000, 2010),
+        random.randint(1, 12),
+        random.randint(1, 28),
+        0, 0, 0
+    )
+    return dt.replace(tzinfo=pytz.utc)
 
 def _random_tags():
     tags = [u'one', u'two', u'three', u'four', u'five', u'six',
@@ -1031,11 +1097,32 @@ if __name__ == "__main__":
         application.mongokit_connection = mongokit.Connection()
         application.mongokit_connection.register([Talk])
     if ElasticSearch:
-        application.es = ElasticSearch('http://localhost:9200')
+        es_dsn = 'http://localhost:9200'
+        es = ElasticSearch(es_dsn)
+        try:
+            # es.health()
+            application.es = es
+        except requests.exceptions.ConnectionError:
+            raise
+            application.es = None
+            print "Can't connect to elastic search on", es_dsn
     if memcache:
         application.memcache = memcache.Client(['localhost:11211'])
     if MySQLdb:
         application.mysql = MySQLdb.connect(**MYSQL)
+    if rethinkdb:
+        conn = rethinkdb.connect()
+
+        # if 'talks' not in rethinkdb.db_list().run(application.rethinkdb):
+        rethinkdb.db_drop('talks').run(conn)
+        rethinkdb.db_create('talks').run(conn)
+        try:
+            rethinkdb.db('talks').table_create('talks')
+        except rethinkdb.RqlRuntimeError:
+            print "rethinkdb table already existed"
+        application.rethinkdb = conn
+    else:
+        print "rethinkdb is not installed"
 
     print "Starting tornado on port", options.port
     application.listen(options.port)

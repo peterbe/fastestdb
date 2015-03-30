@@ -9,3 +9,5 @@ tornado
 mongokit
 MySQL-python
 elasticsearch
+rethinkdb
+pytz
