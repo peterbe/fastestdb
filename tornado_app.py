@@ -79,7 +79,7 @@ except ImportError:
 try:
     import MySQLdb
 except ImportError:
-    MySQLdb
+    MySQLdb = None
 
 define("debug", default=False, help="run in debug mode", type=bool)
 define("port", default=8000, help="run on the given port", type=int)
