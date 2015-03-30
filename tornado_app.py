@@ -1117,7 +1117,10 @@ if __name__ == "__main__":
         rethinkdb.db_drop('talks').run(conn)
         rethinkdb.db_create('talks').run(conn)
         try:
-            rethinkdb.db('talks').table_create('talks')
+            rethinkdb.db('talks').table_create('talks', {
+                'durability': 'soft',
+            })
+            print "Created rethingdb table"
         except rethinkdb.RqlRuntimeError:
             print "rethinkdb table already existed"
         application.rethinkdb = conn
