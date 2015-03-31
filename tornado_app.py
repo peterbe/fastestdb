@@ -631,19 +631,11 @@ class BenchmarkHandler(web.RequestHandler):
                 duration=_random_duration()
             )
             document['when'] = time.mktime(document['when'].timetuple())
-            #document['id'] = uuid.uuid4().hex
             r = self.es.index(
                 'talks',
                 'talk',
                 document)
             ids.add(r['_id'])
-            #docs.append(document)
-        #results = self.es.bulk_index(
-        #    'talks',
-        #    'talk',
-        #    docs
-        #)
-        #ids = [x['create']['_id'] for x in results['items']]
         callback(ids)
 
     @gen.engine
@@ -1113,11 +1105,13 @@ if __name__ == "__main__":
     if rethinkdb:
         conn = rethinkdb.connect()
 
-        # if 'talks' not in rethinkdb.db_list().run(application.rethinkdb):
-        rethinkdb.db_drop('talks').run(conn)
-        rethinkdb.db_create('talks').run(conn)
+        if 'talks' not in rethinkdb.db_list().run(conn):
+            # rethinkdb.db_drop('talks').run(conn)
+            rethinkdb.db_create('talks').run(conn)
+        conn.use('talks')
         try:
-            rethinkdb.db('talks').table_create('talks')
+            # rethinkdb.db('talks').table_create('talks', durability='soft').run(conn)
+            rethinkdb.db('talks').table_create('talks').run(conn)
         except rethinkdb.RqlRuntimeError:
             print "rethinkdb table already existed"
         application.rethinkdb = conn
